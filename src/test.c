@@ -33,28 +33,90 @@
 *********************************************************************/
 #include <stdio.h>
 #include <opencv/highgui.h>
-
+#include <sys/time.h> 
 #include "libuvc/libuvc.h"
+
+// FFmpeg library
+#include <libavutil/imgutils.h>
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+
+
+AVCodec* codec;
+AVCodecContext* codec_context;
+AVCodecParserContext* parser;
+AVFrame* picture;
 
 void cb(uvc_frame_t *frame, void *ptr) {
   uvc_frame_t *bgr;
   uvc_error_t ret;
   IplImage* cvImg;
 
+#if 0
+  static struct timeval tv_old, tv_new;
   printf("callback! length = %u, ptr = %d\n", frame->data_bytes, (int) ptr);
+  gettimeofday(&tv_new, NULL);
+  int sec = tv_new.tv_sec - tv_old.tv_sec;
+  int usec = tv_new.tv_usec - tv_old.tv_usec;
+  printf("time: %d [us]\n", sec * 1000000 + usec);
+  tv_old = tv_new;
+  return 0;
+  
+  int i;
+  for (i=0; i<300; i++) {
+    printf("%x ", ((unsigned char*)frame->data)[i]);
+  }
+  printf("\n");
+#endif
+   
+#if 0
+  AVPacket pkt;
+  int got_picture = 0;
+  int len = 0;
+ 
+  av_init_packet(&pkt);
+  pkt.data = frame->data;
+  pkt.size = frame->data_bytes;
+  pkt.pts = AV_NOPTS_VALUE;
+  pkt.dts = AV_NOPTS_VALUE;
 
+  len = avcodec_decode_video2(codec_context, picture, &got_picture, &pkt);
+  if(len < 0) {
+    fprintf(stderr, "Error while decoding a frame.\n");
+  }
+ 
+  fprintf(stderr, "got_picgure: %d\n", got_picture);
+  if(got_picture == 0) {
+    return;
+  }
+#endif
+  
+#if 0
+  if (avcodec_send_packet(codec_context, &pkt) != 0) {
+    printf("avcodec_send_packet failed\n");
+  }
+  while (avcodec_receive_frame(codec_context, picture) == 0) {
+    printf("receive_frame\n");
+  }
+#endif
+
+#if 1
   bgr = uvc_allocate_frame(frame->width * frame->height * 3);
   if (!bgr) {
     printf("unable to allocate bgr frame!");
     return;
   }
 
-  ret = uvc_any2bgr(frame, bgr);
+  // Decode motion jpeg
+  //ret = uvc_any2bgr(frame, bgr);
+  frame->frame_format = UVC_FRAME_FORMAT_MJPEG;
+  ret = uvc_mjpeg2rgb(frame, bgr);
   if (ret) {
     uvc_perror(ret, "uvc_any2bgr");
     uvc_free_frame(bgr);
     return;
   }
+#endif
 
   cvImg = cvCreateImageHeader(
       cvSize(bgr->width, bgr->height),
@@ -79,6 +141,35 @@ int main(int argc, char **argv) {
   uvc_device_handle_t *devh;
   uvc_stream_ctrl_t ctrl;
 
+  // initialize codec
+  avcodec_register_all();
+   
+  codec = avcodec_find_decoder(AV_CODEC_ID_H264);
+  if(!codec) {
+    printf("Error: cannot find the h264 codec\n");
+    return -1;
+  }
+  codec_context = avcodec_alloc_context3(codec);
+
+  if(codec->capabilities & CODEC_CAP_TRUNCATED) {
+    codec_context->flags |= CODEC_FLAG_TRUNCATED;
+  }
+
+  if(avcodec_open2(codec_context, codec, NULL) < 0) {
+    fprintf(stderr, "Error: could not open codec.\n");
+    return -1;
+  }
+
+  parser = av_parser_init(AV_CODEC_ID_H264);  
+  if(!parser) {
+    fprintf(stderr, "Erorr: cannot create H264 parser.\n");
+    return -1;
+  }
+
+  picture = av_frame_alloc();
+
+  // UVC settings
+  
   res = uvc_init(&ctx, NULL);
 
   if (res < 0) {
@@ -90,7 +181,7 @@ int main(int argc, char **argv) {
 
   res = uvc_find_device(
       ctx, &dev,
-      0, 0, NULL);
+      0x05ca, 0x2711, NULL);
 
   if (res < 0) {
     uvc_perror(res, "uvc_find_device");
@@ -105,11 +196,15 @@ int main(int argc, char **argv) {
       puts("Device opened");
 
       uvc_print_diag(devh, stderr);
-
+#if 1
       res = uvc_get_stream_ctrl_format_size(
-          devh, &ctrl, UVC_FRAME_FORMAT_YUYV, 640, 480, 30
+          devh, &ctrl, UVC_FRAME_FORMAT_H264, 1920, 1080, 29
       );
-
+#else
+      res = uvc_get_stream_ctrl_format_size(
+          devh, &ctrl, UVC_FRAME_FORMAT_MJPEG, 1280, 720, 14
+      );
+#endif
       uvc_print_stream_ctrl(&ctrl, stderr);
 
       if (res < 0) {

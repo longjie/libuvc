@@ -129,6 +129,8 @@ static const char *_uvc_name_for_format_subtype(uint8_t subtype) {
     return "MJPEGFormat";
   case UVC_VS_FORMAT_FRAME_BASED:
     return "FrameFormat";
+  case UVC_VS_FORMAT_H264:
+    return "H264Format";
   default:
     return "Unknown";
   }
@@ -180,6 +182,7 @@ void uvc_print_diag(uvc_device_handle_t *devh, FILE *stream) {
           case UVC_VS_FORMAT_UNCOMPRESSED:
           case UVC_VS_FORMAT_MJPEG:
           case UVC_VS_FORMAT_FRAME_BASED:
+          case UVC_VS_FORMAT_H264:
             fprintf(stream,
                 "\t\%s(%d)\n"
                 "\t\t  bits per pixel: %d\n"
@@ -232,13 +235,14 @@ void uvc_print_diag(uvc_device_handle_t *devh, FILE *stream) {
 		      10000000 / *interval_ptr);
                 }
               } else {
-                fprintf(stream,
-                    "\t\t\t  min interval[%d] = 1/%d\n"
-                    "\t\t\t  max interval[%d] = 1/%d\n",
-                    frame_desc->dwMinFrameInterval,
-                    10000000 / frame_desc->dwMinFrameInterval,
-                    frame_desc->dwMaxFrameInterval,
-                    10000000 / frame_desc->dwMaxFrameInterval);
+                if (frame_desc->dwMinFrameInterval && frame_desc->dwMaxFrameInterval)
+                  fprintf(stream,
+                          "\t\t\t  min interval[%d] = 1/%d\n"
+                          "\t\t\t  max interval[%d] = 1/%d\n",
+                          frame_desc->dwMinFrameInterval,
+                          10000000 / frame_desc->dwMinFrameInterval,
+                          frame_desc->dwMaxFrameInterval,
+                          10000000 / frame_desc->dwMaxFrameInterval);
                 if (frame_desc->dwFrameIntervalStep)
                   fprintf(stream,
                       "\t\t\t  interval step[%d] = 1/%d\n",

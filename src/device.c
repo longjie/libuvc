@@ -93,6 +93,12 @@ uvc_error_t uvc_parse_vs_frame_frame(uvc_streaming_interface_t *stream_if,
 uvc_error_t uvc_parse_vs_input_header(uvc_streaming_interface_t *stream_if,
 				      const unsigned char *block,
 				      size_t block_size);
+uvc_error_t uvc_parse_vs_format_h264(uvc_streaming_interface_t *stream_if,
+                                     const unsigned char *block,
+                                     size_t block_size);
+uvc_error_t uvc_parse_vs_frame_h264(uvc_streaming_interface_t *stream_if,
+                                    const unsigned char *block,
+                                    size_t block_size);
 
 void LIBUSB_CALL _uvc_status_callback(struct libusb_transfer *transfer);
 
@@ -288,6 +294,23 @@ uvc_error_t uvc_open(
     return ret;
   }
 
+  ret = libusb_set_auto_detach_kernel_driver(usb_devh, 1);
+  ret = libusb_detach_kernel_driver(usb_devh, 2);
+  if (ret != 0) {
+    fprintf(stderr, "libusb_detach_kernel_driver failed: %d\n", ret);
+  }
+  libusb_release_interface(usb_devh, 2);
+  
+  // set configuration
+  ret = libusb_set_configuration(usb_devh, 2);
+  if (ret != 0) {
+    fprintf(stderr, "libusb_set_configuration failed: %d\n", ret);
+  }
+
+  int i_config;
+  libusb_get_configuration(usb_devh, &i_config);
+  fprintf(stderr, "current config: %d\n", i_config);
+
   uvc_ref_device(dev);
 
   internal_devh = calloc(1, sizeof(*internal_devh));
@@ -378,9 +401,13 @@ uvc_error_t uvc_get_device_info(uvc_device_t *dev,
     UVC_EXIT(UVC_ERROR_NO_MEM);
     return UVC_ERROR_NO_MEM;
   }
-
+#if 0
   if (libusb_get_config_descriptor(dev->usb_dev,
 				   0,
+				   &(internal_info->config)) != 0) {
+#endif
+  if (libusb_get_config_descriptor(dev->usb_dev,
+				   1,
 				   &(internal_info->config)) != 0) {
     free(internal_info);
     UVC_EXIT(UVC_ERROR_IO);
@@ -1018,6 +1045,8 @@ uvc_error_t uvc_parse_vc_header(uvc_device_t *dev,
     info->ctrl_if.dwClockFrequency = DW_TO_INT(block + 7);
   case 0x0110:
     break;
+  case 0x0150:
+    break;
   default:
     UVC_EXIT(UVC_ERROR_NOT_SUPPORTED);
     return UVC_ERROR_NOT_SUPPORTED;
@@ -1444,6 +1473,88 @@ uvc_error_t uvc_parse_vs_frame_uncompressed(uvc_streaming_interface_t *stream_if
 }
 
 /** @internal
+ * @brief Parse a VideoStreaming H264 format block.
+ * @ingroup device
+ */
+uvc_error_t uvc_parse_vs_format_h264(uvc_streaming_interface_t *stream_if,
+    const unsigned char *block, size_t block_size) {
+  UVC_ENTER();
+
+  uvc_format_desc_t *format = calloc(1, sizeof(*format));
+
+  format->parent = stream_if;
+  format->bDescriptorSubtype = block[2];
+  format->bFormatIndex = block[3];
+  memcpy(format->fourccFormat, "H264", 4);
+  memcpy(format->guidFormat, "H264", 4);
+  format->bmFlags = block[5];
+
+  DL_APPEND(stream_if->format_descs, format);
+
+  UVC_EXIT(UVC_SUCCESS);
+  return UVC_SUCCESS;
+}
+
+/** @internal
+ * @brief Parse a VideoStreaming uncompressed frame block.
+ * @ingroup device
+ */
+uvc_error_t uvc_parse_vs_frame_h264(uvc_streaming_interface_t *stream_if,
+    const unsigned char *block, size_t block_size) {
+  uvc_format_desc_t *format;
+  uvc_frame_desc_t *frame;
+
+  const unsigned char *p;
+  int i;
+
+  UVC_ENTER();
+
+  format = stream_if->format_descs->prev;
+  frame = calloc(1, sizeof(*frame));
+
+  frame->parent = format;
+
+  frame->bDescriptorSubtype = block[2];
+  frame->bFrameIndex = block[3];
+  // この辺からH264独自の変更が必要
+  frame->dwDefaultFrameInterval = DW_TO_INT(&block[39]);
+  frame->intervals = 0;
+  frame->wWidth = block[4] + (block[5] << 8);
+  frame->wHeight = block[6] + (block[7] << 8);
+#if 0
+  frame->bmCapabilities = block[4];
+  frame->wWidth = block[5] + (block[6] << 8);
+  frame->wHeight = block[7] + (block[8] << 8);
+  frame->dwMinBitRate = DW_TO_INT(&block[9]);
+  frame->dwMaxBitRate = DW_TO_INT(&block[13]);
+  frame->dwMaxVideoFrameBufferSize = DW_TO_INT(&block[17]);
+  frame->dwDefaultFrameInterval = DW_TO_INT(&block[21]);
+  frame->bFrameIntervalType = block[25];
+  
+  if (block[25] == 0) {
+    frame->dwMinFrameInterval = DW_TO_INT(&block[26]);
+    frame->dwMaxFrameInterval = DW_TO_INT(&block[30]);
+    frame->dwFrameIntervalStep = DW_TO_INT(&block[34]);
+  } else {
+    frame->intervals = calloc(block[25] + 1, sizeof(frame->intervals[0]));
+    p = &block[26];
+
+    for (i = 0; i < block[25]; ++i) {
+      frame->intervals[i] = DW_TO_INT(p);
+      p += 4;
+    }
+    frame->intervals[block[25]] = 0;
+  }
+#endif
+
+  DL_APPEND(format->frame_descs, frame);
+
+  UVC_EXIT(UVC_SUCCESS);
+  return UVC_SUCCESS;
+}
+
+
+/** @internal
  * Process a single VideoStreaming descriptor block
  * @ingroup device
  */
@@ -1498,9 +1609,17 @@ uvc_error_t uvc_parse_vs(
   case UVC_VS_FORMAT_STREAM_BASED:
     fprintf ( stderr, "unsupported descriptor subtype VS_FORMAT_STREAM_BASED\n" );
     break;
+  case UVC_VS_FORMAT_H264:
+    fprintf ( stderr, "FORMAT_H264\n" );
+    ret = uvc_parse_vs_format_h264 ( stream_if, block, block_size );
+    break;
+  case UVC_VS_FRAME_H264:
+    fprintf ( stderr, "FRAME_H264\n" );
+    ret = uvc_parse_vs_frame_h264(stream_if, block, block_size);
+    break;
   default:
     /** @todo handle JPEG and maybe still frames or even DV... */
-    //fprintf ( stderr, "unsupported descriptor subtype: %d\n",descriptor_subtype );
+    fprintf ( stderr, "unsupported descriptor subtype: %d\n",descriptor_subtype );
     break;
   }
 

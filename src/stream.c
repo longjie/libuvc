@@ -127,6 +127,8 @@ struct format_table_entry *_get_format_entry(enum uvc_frame_format format) {
       {UVC_FRAME_FORMAT_MJPEG})
     FMT(UVC_FRAME_FORMAT_MJPEG,
       {'M',  'J',  'P',  'G'})
+    FMT(UVC_FRAME_FORMAT_H264,
+      {'H',  '2',  '6',  '4'})
 
     default:
       return NULL;
@@ -182,17 +184,19 @@ uvc_error_t uvc_query_stream_ctrl(
     uvc_stream_ctrl_t *ctrl,
     uint8_t probe,
     enum uvc_req_code req) {
-  uint8_t buf[34];
+  uint8_t buf[41];
   size_t len;
-  uvc_error_t err;
+  int err;
 
   memset(buf, 0, sizeof(buf));
 
-  if (devh->info->ctrl_if.bcdUVC >= 0x0110)
+  if (devh->info->ctrl_if.bcdUVC >= 0x0150)
+    len = 41;
+  else if (devh->info->ctrl_if.bcdUVC >= 0x0110)
     len = 34;
   else
     len = 26;
-
+  /* table 4-75 */
   /* prepare for a SET transfer */
   if (req == UVC_SET_CUR) {
     SHORT_TO_SW(ctrl->bmHint, buf);
@@ -207,13 +211,26 @@ uvc_error_t uvc_query_stream_ctrl(
     INT_TO_DW(ctrl->dwMaxVideoFrameSize, buf + 18);
     INT_TO_DW(ctrl->dwMaxPayloadTransferSize, buf + 22);
 
-    if (len == 34) {
-      INT_TO_DW ( ctrl->dwClockFrequency, buf + 26 );
+    if (len > 26) {	// len == 34
+			// XXX add to support UVC 1.1
+#if 0
+      INT_TO_DW(ctrl->dwClockFrequency, buf + 26);
       buf[30] = ctrl->bmFramingInfo;
-      buf[31] = ctrl->bPreferredVersion;
+      buf[31] = ctrl->bPreferedVersion;
       buf[32] = ctrl->bMinVersion;
       buf[33] = ctrl->bMaxVersion;
-      /** @todo support UVC 1.1 */
+#endif
+      if (len == 41) {
+#if 0
+        // XXX add to support UVC1.5
+        buf[34] = ctrl->bUsage;
+        buf[35] = ctrl->bBitDepthLuma;
+        buf[36] = ctrl->bmSettings;
+        buf[37] = ctrl->bMaxNumberOfRefFramesPlus1;
+        SHORT_TO_SW(ctrl->bmRateControlModes, buf + 38);
+        LONG_TO_QW(ctrl->bmLayoutPerStream, buf + 40);
+#endif
+      }
     }
   }
 
@@ -226,7 +243,7 @@ uvc_error_t uvc_query_stream_ctrl(
       ctrl->bInterfaceNumber,
       buf, len, 0
   );
-
+  fprintf(stderr, "libusb_control_transfer error: %s\n", libusb_error_name(err));
   if (err <= 0) {
     return err;
   }
@@ -245,13 +262,24 @@ uvc_error_t uvc_query_stream_ctrl(
     ctrl->dwMaxVideoFrameSize = DW_TO_INT(buf + 18);
     ctrl->dwMaxPayloadTransferSize = DW_TO_INT(buf + 22);
 
-    if (len == 34) {
+    if (len > 26) {
       ctrl->dwClockFrequency = DW_TO_INT ( buf + 26 );
       ctrl->bmFramingInfo = buf[30];
       ctrl->bPreferredVersion = buf[31];
       ctrl->bMinVersion = buf[32];
       ctrl->bMaxVersion = buf[33];
       /** @todo support UVC 1.1 */
+      if (len >= 41) {
+        // XXX add to support UVC1.5
+#if 0
+        ctrl->bUsage = buf[34];
+        ctrl->bBitDepthLuma = buf[35];
+        ctrl->bmSettings = buf[36];
+        ctrl->bMaxNumberOfRefFramesPlus1 = buf[37];
+        ctrl->bmRateControlModes = SW_TO_SHORT(buf + 38);
+        ctrl->bmLayoutPerStream = QW_TO_LONG(buf + 40);
+#endif
+      }
     }
     else
       ctrl->dwClockFrequency = devh->info->ctrl_if.dwClockFrequency;
@@ -403,6 +431,19 @@ uvc_error_t uvc_get_stream_ctrl_format_size(
           uint32_t interval_100ns = 10000000 / fps;
           uint32_t interval_offset = interval_100ns - frame->dwMinFrameInterval;
 
+          // かなりアドホック，ちゃんとあとでやる
+          if (frame->dwMinFrameInterval == 0 && frame->dwMaxFrameInterval == 0) {
+            /* 全部相手に任せる negotiationしない? */
+            ctrl->bmHint = 1;
+            /* H264フォーマットを要求*/
+            ctrl->bFormatIndex = 2;
+            /* frame index は0 かな？ 1か？*/
+            ctrl->bFrameIndex = 0;
+            ctrl->dwFrameInterval = interval_100ns;
+
+            goto found;
+          }
+          
           if (interval_100ns >= frame->dwMinFrameInterval
               && interval_100ns <= frame->dwMaxFrameInterval
               && !(interval_offset
@@ -422,7 +463,15 @@ uvc_error_t uvc_get_stream_ctrl_format_size(
 
   return UVC_ERROR_INVALID_MODE;
 
-found:
+ found:
+  {
+    int i_config;
+    libusb_get_configuration(devh->usb_devh, &i_config);
+    fprintf(stderr, "current config: %d\n", i_config);
+  }  
+  /* H264フォーマットを要求*/
+  ctrl->bFormatIndex = 2;
+  
   return uvc_probe_stream_ctrl(devh, ctrl);
 }
 
@@ -435,11 +484,9 @@ found:
 uvc_error_t uvc_probe_stream_ctrl(
     uvc_device_handle_t *devh,
     uvc_stream_ctrl_t *ctrl) {
- 
   uvc_query_stream_ctrl(
       devh, ctrl, 1, UVC_SET_CUR
   );
-
   uvc_query_stream_ctrl(
       devh, ctrl, 1, UVC_GET_CUR
   );

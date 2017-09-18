@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 2.8)
 project(libuvc)
+set(CMAKE_BUILD_TYPE "Debug")
 
 if (NOT CMAKE_BUILD_TYPE)
   message(STATUS "No build type selected, default to Release")
@@ -103,9 +104,11 @@ if(BUILD_UVC_SHARED)
 
   target_link_libraries(uvc ${LIBUSB_LIBRARIES})
 
-  #add_executable(test src/test.c)
-  #target_link_libraries(test uvc ${LIBUSB_LIBRARIES} opencv_highgui
-  #  opencv_core)
+  add_executable(test src/test.c)
+  target_link_libraries(test uvc ${LIBUSB_LIBRARIES} avformat avutil avcodec opencv_highgui opencv_core)
+
+  add_executable(testlibusb src/testlibusb.c)
+  target_link_libraries(testlibusb ${LIBUSB_LIBRARIES})
 endif()
 
 install(TARGETS ${UVC_TARGETS}
